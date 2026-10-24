@@ -110,8 +110,9 @@ TETRIS from the games disk: `PRUN KBD.PRC`, `PRUN SNC.PRC`, `INST SN`,
 |-----------------|-------------|
 | F1-F5           | К1-К5       |
 | F6, F7, F8      | ПОМ УСТ ИСП |
-| F11             | СБРОС       |
-| F12             | СТОП        |
+| Delete, End, Page Down | ПОМ УСТ ИСП (as well) |
+| F11, Insert     | СБРОС       |
+| F12, Home       | СТОП        |
 | Esc             | АР2         |
 | Backspace       | ЗБ          |
 | Tab             | ТАБ         |

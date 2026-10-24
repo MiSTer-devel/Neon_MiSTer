@@ -45,9 +45,9 @@ images as FD0/FD1 and a hard disk image; `boot.vhd`, `boot1.vhd` and
 as FD0, FD1 and the hard disk.
 
 A ready set of images (system and demo floppies, a hard disk image with
-a system and the software below on its partitions) is attached to each
-[release](https://github.com/alfishe/Neon_MiSTer/releases) of this
-repository as `Neon_software_*.zip`; unpack it into `games/Neon`.
+a system and the software below on its partitions) is in
+[software](https://github.com/MiSTer-devel/Neon_MiSTer/tree/master/software) folder of this
+repository; unpack it into `games/Neon`.
 
 Floppy images are 819200-byte `.dsk` files.  Sources:
 

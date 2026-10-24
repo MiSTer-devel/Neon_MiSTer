@@ -4,9 +4,9 @@
 // Soyuz-Neon main memory on the MiSTer SDRAM board: the command sequence,
 // state numbering and data capture of the TSConf core's sdram.v (TS-Labs /
 // Sorgelig, GPL v3) behind a single 16-bit word port with byte enables,
-// req held high until ack.  The earlier slot-based controller
-// (sdram_slot.sv) passed simulation and timing analysis but corrupted
-// single reads on real hardware; this sequence is proven on the board.
+// req held high until ack.  An earlier controller of our own passed
+// simulation and timing analysis but corrupted single reads on the
+// board; this sequence is proven there.
 //
 // ACTIVE in state 25, READ/WRITE with auto precharge in state 27 (tRCD two
 // clocks), SDRAM_DQ registered every clock and taken in state 24, four

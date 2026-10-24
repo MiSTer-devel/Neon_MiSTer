@@ -1,17 +1,29 @@
 //
 // fdc.sv
 //
-// The floppy controller (KR1810VG72A, an 8272) and the 2 KB disk buffer
-// shared with the hard disk controller, as NeonBTL models them
-// (emubase/Floppy.cpp and the HD.BUFF/FD.CNT/HD.SCNT handling in
-// Board.cpp): a command phase, an execution phase that moves whole
-// sectors between the buffer and the disk, and a result phase.  The
-// buffer is four 512-byte sectors; a READ DATA fills it from the current
-// sector up to the fourth, a WRITE DATA empties HD.SCNT sectors from the
-// end of it.
+// The disk controller: the floppy controller (KR1810VG72A, an 8272), the
+// hard disk controller (KM1809VG7, a WD1010) and the 2 KB buffer they
+// share, as NeonBTL models the floppy side (emubase/Floppy.cpp and the
+// HD.BUFF/FD.CNT/HD.SCNT handling in Board.cpp) and as the firmware's
+// disk driver drives the hard disk side (NeonBTL has no hard disk).
 //
-// Disks are .dsk images on hps_io's sector interface: 80 tracks, two
-// sides, ten sectors of 512 bytes, sector (c * 2 + h) * 10 + r - 1.
+// The buffer is four 512-byte sectors with one address counter: FD.CNT
+// selects a sector buffer and zeroes the position, HD.BUFF reads or
+// writes a byte and steps it.  An access to HD.SDH turns the buffer to
+// write mode, one to HD.CSR to read mode.  The floppy's READ DATA fills
+// the buffer from the current sector up to the fourth, its WRITE DATA
+// empties HD.SCNT sectors from the end of it.  The hard disk's READ
+// SECTOR puts HD.SCNT sectors into the buffer from the selected one on,
+// WRITE SECTOR takes them from there; both end in an interrupt.
+//
+// Floppies are .dsk images on hps_io's sector interface: 80 tracks, two
+// sides, ten sectors of 512 bytes, sector (c * 2 + h) * 10 + r - 1.  The
+// hard disk is a raw image on the third slot, four heads of eighteen
+// sectors a cylinder (the firmware formatter's defaults): image sector
+// 1 + (c * 4 + h) * 18 + s with s counted from 0, and image sector 0 the
+// firmware's home block, which it reads as sector 255 of cylinder 0 head
+// 0 (the formatter lays that sector down outside the normal numbering);
+// the cylinder count is the image size.  tools/mkhd.py makes one.
 //
 // The registers are on the CPU clock; the sector interface on sd_clk.
 //
@@ -23,25 +35,26 @@ module fdc
 
    // the registers, from neon_sys: sel is a one-clock strobe
    input             sel,
-   input       [2:0] port,         // 0 HD.BUFF, 2 HD.SCNT, 4 FD.CSR, 5 FD.BUF, 7 FD.CNT
+   input       [3:0] port,         // address bits 4:1 of 161040..161076: 0 HD.BUFF,
+                                   // 1 HD.ERR, 2 HD.SCNT, 3 HD.SNUM, 4 HD.CNLO, 5 HD.CNHI,
+                                   // 6 HD.SDH, 7 HD.CSR, 12 FD.CSR, 13 FD.BUF, 15 FD.CNT
    input             wr,
    input       [7:0] din,
    output      [7:0] dout,         // valid the clock after sel
-   input             dir_wr,       // HD.SDH accessed: buffer to write mode
-   input             dir_rd,       // HD.CSR accessed: buffer to read mode
-   input       [4:0] params,       // {hdd, motor, density, drive, side}
-   output reg        int_o,
+   output reg        int_o,        // the floppy controller's interrupt
+   output reg        hd_int,       // the hard disk controller's
    output            motor_o,
+   output     [15:0] dbg,          // hard disk state for the debug overlay
 
-   // hps_io, on sd_clk
+   // hps_io, on sd_clk: slots 0 and 1 the floppies, 2 the hard disk
    input             sd_clk,
-   input       [1:0] img_mounted,
+   input       [2:0] img_mounted,
    input             img_readonly,
    input      [63:0] img_size,
    output     [31:0] sd_lba,
-   output      [1:0] sd_rd,
-   output      [1:0] sd_wr,
-   input       [1:0] sd_ack,
+   output      [2:0] sd_rd,
+   output      [2:0] sd_wr,
+   input       [2:0] sd_ack,
    input       [7:0] sd_buff_addr,
    input      [15:0] sd_buff_dout,
    output reg [15:0] sd_buff_din,
@@ -52,9 +65,23 @@ localparam [7:0] MSR_RQM = 8'h80, MSR_DIO = 8'h40, MSR_CB = 8'h10;
 localparam [1:0] PH_CMD = 2'd1, PH_EXEC = 2'd2, PH_RESULT = 2'd3;
 localparam [7:0] MAX_TRACKS = 8'd83;
 
+// the hard disk: WD1010 status bits, commands and the fixed geometry
+localparam [7:0] HS_BUSY = 8'h80, HS_READY = 8'h40, HS_SC = 8'h10, HS_DRQ = 8'h08, HS_ERR = 8'h01;
+localparam [7:0] HE_IDNF = 8'h10, HE_ABORT = 8'h04;
+localparam [3:0] HC_RESTORE = 4'h1, HC_READ = 4'h2, HC_WRITE = 4'h3, HC_SCANID = 4'h4,
+                 HC_FORMAT = 4'h5, HC_SEEK = 4'h7;
+localparam       HD_HEADS = 4, HD_SPT = 18;
+localparam [1:0] HD_IDLE = 2'd0, HD_DELAY = 2'd1, HD_XFER = 2'd2, HD_NEXT = 2'd3;
+// A command takes at least this long (CPU clocks, 3 ms): the firmware arms
+// its wait for the interrupt only after the command, through several
+// emulated-register traps, and a completion that comes sooner is lost.
+// A real drive takes longer than this for any command.
+localparam [15:0] HD_MIN_CLOCKS = 16'd24000;
+
 // the sector transfer sequence
 reg        xfer_run = 0;      // moving sectors
 reg        xfer_we  = 0;
+reg        xfer_hd  = 0;      // the hard disk's slot, not the floppy's
 reg  [3:0] sector   = 0;      // 0..9
 reg  [1:0] xfer_buf = 0;
 reg        xfer_req = 0;      // to sd_clk: do one sector
@@ -66,7 +93,7 @@ reg  [1:0] req_s = 0;
 reg        xfer_done_sd = 0;
 reg        sd_busy = 0;
 reg        sd_req_rd = 0, sd_req_wr = 0;
-reg  [1:0] ack_d = 0;
+reg  [2:0] ack_d = 0;
 
 // ---------------------------------------------------------------------
 // The buffer: 1024 words, byte lanes separate; port A the CPU, port B sd
@@ -77,7 +104,7 @@ wire       a_q_sel = pos[0];
 reg        a_q_sel_d;
 wire [7:0] a_q = a_q_sel_d ? a_qhi : a_qlo;
 always @(posedge clk) a_q_sel_d <= a_q_sel;
-wire a_wr = sel && port == 3'd0 && wr && dir;
+wire a_wr = sel && port == 4'd0 && wr && dir;
 
 wire [9:0] b_addr = {xfer_buf, sd_buff_addr};
 wire       b_wr   = sd_buff_wr && |sd_ack && sd_busy && !xfer_we;
@@ -102,19 +129,42 @@ dpram #(.AW(10), .DW(8)) buf_hi
 // ---------------------------------------------------------------------
 // Drives
 // ---------------------------------------------------------------------
-reg  [1:0] mounted = 0;
-reg  [1:0] readonly = 0;
+reg  [2:0] mounted = 0;
+reg  [2:0] readonly = 0;
+reg [31:0] hd_sectors = 0;
 always @(posedge sd_clk) begin
    if(img_mounted[0]) begin mounted[0] <= |img_size; readonly[0] <= img_readonly; end
    if(img_mounted[1]) begin mounted[1] <= |img_size; readonly[1] <= img_readonly; end
+   if(img_mounted[2]) begin mounted[2] <= |img_size; readonly[2] <= img_readonly; hd_sectors <= img_size[40:9]; end
 end
 
-wire       hdd_sel = params[4];
-wire       motor   = params[3];
-wire       drive   = params[2];
-wire       side    = params[0];
+// the HD.SDH register selects for both controllers: {size, drive, head}
+// on the hard disk, {motor, density, drive, side} on the floppies, bit 3
+// the hard disk itself
+reg  [7:0] hd_sdh = 0;
+wire       hdd_sel = hd_sdh[3];
+wire       motor   = hd_sdh[4];
+wire       drive   = hd_sdh[2];
+wire       side    = hd_sdh[0];
 assign     motor_o = motor;
 wire       attached = mounted[drive];
+
+// the hard disk controller
+reg  [7:0] hd_err = 0, hd_snum = 0;
+reg [15:0] hd_cnum = 0;
+reg  [7:0] hd_status = HS_READY | HS_SC;
+reg  [3:0] hd_cmd = 0;
+reg  [1:0] hd_st = HD_IDLE;
+reg [15:0] hd_delay = 0;
+reg  [8:0] hd_left = 0;          // sectors still to move
+reg  [1:0] hd_buf = 0;           // the buffer the next sector goes to or comes from
+// The formatter numbers the sectors of partition p as 32p + 0..17, so a
+// seek into the wrong partition finds no ID: the sector within the track
+// is the low five bits of the number.
+wire        hd_home = (hd_cnum == 0) && (hd_sdh[2:0] == 0) && (hd_snum == 8'd255);
+wire  [4:0] hd_sec  = hd_snum[4:0];
+wire [31:0] hd_lba = hd_home ? 32'd0 : ({16'd0, hd_cnum} * HD_HEADS + {29'd0, hd_sdh[2:0]}) * HD_SPT + {27'd0, hd_sec} + 32'd1;
+wire        hd_lba_ok = mounted[2] && hd_lba < hd_sectors && hd_sdh[2:0] < HD_HEADS && (hd_sec < HD_SPT || hd_home);
 
 // ---------------------------------------------------------------------
 // The controller
@@ -170,28 +220,58 @@ always @(posedge clk) begin
 
    if(reset || init) begin
       phase <= PH_CMD; cmdlen <= 0; reslen <= 0; respos <= 0; int_o <= 1'b0;
-      xfer_run <= 1'b0; xfer_req <= 1'b0;
+      xfer_run <= 1'b0; xfer_req <= 1'b0; xfer_hd <= 1'b0;
       nbuf <= 0; pos <= 0; dir <= 1'b0;
-      if(reset) scnt <= 0;
+      hd_st <= HD_IDLE; hd_int <= 1'b0; hd_status <= HS_READY | HS_SC; hd_err <= 0;
+      if(reset) begin scnt <= 0; hd_sdh <= 0; hd_snum <= 0; hd_cnum <= 0; end
    end
    else begin
-      if(dir_wr) dir <= 1'b1;
-      if(dir_rd) dir <= 1'b0;
-
       // ---------------- register access ----------------
       if(sel) case(port)
-      3'd0: begin   // HD.BUFF
+      4'd0: begin   // HD.BUFF
          if(dir ? wr : !wr) begin
             if(pos == 9'd511) begin pos <= 0; nbuf <= nbuf + 1'd1; end
             else pos <= pos + 1'd1;
          end
          dout_r <= dir ? 8'd0 : a_q;
       end
-      3'd2: begin   // HD.SCNT
+      4'd1: begin   // HD.ERR: the error register, write precompensation
+         if(!wr) dout_r <= hd_err;
+      end
+      4'd2: begin   // HD.SCNT
          if(wr) scnt <= din; else dout_r <= scnt;
       end
-      3'd4: dout_r <= msr;   // FD.CSR
-      3'd5: begin   // FD.BUF
+      4'd3: begin   // HD.SNUM
+         if(wr) hd_snum <= din; else dout_r <= hd_snum;
+      end
+      4'd4: begin   // HD.CNLO
+         if(wr) hd_cnum[7:0] <= din; else dout_r <= hd_cnum[7:0];
+      end
+      4'd5: begin   // HD.CNHI
+         if(wr) hd_cnum[15:8] <= din; else dout_r <= hd_cnum[15:8];
+      end
+      4'd6: begin   // HD.SDH: the buffer into write mode
+         dir <= 1'b1;
+         if(wr) hd_sdh <= din; else dout_r <= hd_sdh;
+      end
+      4'd7: begin   // HD.CSR: the buffer into read mode; status, or a command
+         dir <= 1'b0;
+         if(wr) begin
+            hd_int    <= 1'b0;
+            hd_cmd    <= din[7:4];
+            hd_status <= (hd_status | HS_BUSY) & ~(HS_DRQ | HS_ERR);
+            hd_err    <= 0;
+            hd_left   <= !din[2] ? 9'd1 : (scnt == 0) ? 9'd256 : {1'b0, scnt};   // the M bit: HD.SCNT sectors, else one
+            hd_delay  <= HD_MIN_CLOCKS;
+            hd_st     <= HD_DELAY;
+         end
+         else begin
+            dout_r <= hd_status;
+            hd_int <= 1'b0;
+         end
+      end
+      4'd12: dout_r <= msr;   // FD.CSR
+      4'd13: begin   // FD.BUF
          dout_r <= 8'hff;
          if(!hdd_sel) begin
             if(wr) begin
@@ -248,7 +328,7 @@ always @(posedge clk) begin
          end
          else dout_r <= 8'd0;
       end
-      3'd7: begin   // FD.CNT
+      4'd15: begin   // FD.CNT
          if(wr) begin
             nbuf <= din[1:0];
             pos  <= 0;
@@ -259,6 +339,81 @@ always @(posedge clk) begin
          end
       end
       default: dout_r <= 8'd0;
+      endcase
+
+      // ---------------- the hard disk controller ----------------
+      case(hd_st)
+      HD_IDLE: ;
+      HD_DELAY: begin
+         // the command settles: a seek, or the first sector of a transfer
+         if(hd_delay != 0) hd_delay <= hd_delay - 1'd1;
+         else begin
+            case(hd_cmd)
+            HC_READ, HC_WRITE: begin
+               if(!hd_lba_ok || (hd_cmd == HC_WRITE && readonly[2])) begin
+                  hd_status <= (hd_status & ~HS_BUSY) | HS_ERR;
+                  hd_err    <= HE_IDNF;
+                  hd_int    <= 1'b1;
+                  hd_st     <= HD_IDLE;
+               end
+               else begin
+                  // a read lands in the selected buffer; a write takes the
+                  // buffer after the selected one (the firmware selects the
+                  // one before the first it filled)
+                  xfer_hd  <= 1'b1;
+                  xfer_we  <= (hd_cmd == HC_WRITE);
+                  xfer_buf <= (hd_cmd == HC_WRITE) ? nbuf + 1'd1 : nbuf;
+                  hd_buf   <= (hd_cmd == HC_WRITE) ? nbuf + 2'd2 : nbuf + 1'd1;
+                  xfer_lba <= hd_lba;
+                  xfer_req <= 1'b1;
+                  hd_st    <= HD_XFER;
+               end
+            end
+            HC_RESTORE: begin
+               hd_cnum   <= 0;
+               hd_status <= (hd_status & ~HS_BUSY) | HS_SC | (mounted[2] ? HS_READY : 8'd0);
+               if(!mounted[2]) begin hd_status[0] <= 1'b1; hd_err <= HE_ABORT; end
+               hd_int    <= 1'b1;
+               hd_st     <= HD_IDLE;
+            end
+            default: begin   // SEEK, SCAN ID, FORMAT: done as asked
+               hd_status <= (hd_status & ~HS_BUSY) | HS_SC;
+               hd_int    <= 1'b1;
+               hd_st     <= HD_IDLE;
+            end
+            endcase
+         end
+      end
+      HD_XFER: if(xfer_req && done_s[1]) begin
+         xfer_req <= 1'b0;
+         nbuf     <= xfer_buf + 1'd1;
+         pos      <= 0;
+         hd_snum  <= hd_snum + 1'd1;
+         hd_left  <= hd_left - 1'd1;
+         hd_st    <= HD_NEXT;
+      end
+      HD_NEXT: if(!done_s[1]) begin
+         if(hd_left == 0) begin
+            xfer_hd   <= 1'b0;
+            hd_status <= hd_status & ~HS_BUSY;
+            hd_int    <= 1'b1;
+            hd_st     <= HD_IDLE;
+         end
+         else if(!hd_lba_ok) begin
+            xfer_hd   <= 1'b0;
+            hd_status <= (hd_status & ~HS_BUSY) | HS_ERR;
+            hd_err    <= HE_IDNF;
+            hd_int    <= 1'b1;
+            hd_st     <= HD_IDLE;
+         end
+         else begin
+            xfer_buf <= hd_buf;
+            hd_buf   <= hd_buf + 1'd1;
+            xfer_lba <= hd_lba;
+            xfer_req <= 1'b1;
+            hd_st    <= HD_XFER;
+         end
+      end
       endcase
 
       // ---------------- the sector transfer sequence ----------------
@@ -283,7 +438,7 @@ always @(posedge clk) begin
             xfer_req <= 1'b1;
          end
       end
-      if(xfer_req && done_s[1]) begin
+      if(xfer_req && done_s[1] && !xfer_hd) begin
          xfer_req <= 1'b0;
          if(xfer_we) sector <= (sector == 4'd9) ? 4'd0 : sector + 1'd1;
          else begin
@@ -300,12 +455,21 @@ always @(posedge clk) begin
    end
 end
 
+reg  [9:0] dbg_secs = 0;        // sectors moved, commands taken: for the overlay
+reg  [5:0] dbg_cmds = 0;
+always @(posedge clk) begin
+   if(hd_st == HD_XFER && xfer_req && done_s[1]) dbg_secs <= dbg_secs + 1'd1;
+   if(sel && port == 4'd7 && wr) dbg_cmds <= dbg_cmds + 1'd1;
+end
+assign dbg = {dbg_secs, dbg_cmds};
+
 // ---------------------------------------------------------------------
 // sd_clk side: one sector per request
 // ---------------------------------------------------------------------
 
-assign sd_rd  = {2{sd_req_rd}} & (drive ? 2'b10 : 2'b01);
-assign sd_wr  = {2{sd_req_wr}} & (drive ? 2'b10 : 2'b01);
+wire [2:0] slot = xfer_hd ? 3'b100 : drive ? 3'b010 : 3'b001;
+assign sd_rd  = {3{sd_req_rd}} & slot;
+assign sd_wr  = {3{sd_req_wr}} & slot;
 assign sd_lba = xfer_lba;
 
 always @(posedge sd_clk) begin

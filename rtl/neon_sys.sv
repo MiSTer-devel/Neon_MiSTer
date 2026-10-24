@@ -54,14 +54,12 @@ module neon_sys
 
    // the floppy controller / disk buffer side (fdc.sv)
    output            fdc_sel,      // one of its ports is addressed, on the strobe
-   output      [2:0] fdc_port,     // address bits 3:1
+   output      [3:0] fdc_port,     // address bits 4:1
    output            fdc_wr,
    input       [7:0] fdc_dout,
    output reg        fdc_reset,
-   output reg        hd_dir_wr,    // SDH access: buffer into write mode
-   output reg        hd_dir_rd,    // CSR access: buffer into read mode
-   output reg  [4:0] fdc_params,   // {motor, density, drive, side} from HD.SDH, [4] = SDH[3] (HDD selected)
    input             fdc_int,
+   input             hd_int,
    output      [7:0] dbg,          // {ppib_rd[3:0], ioint, fdc_int, hd_int, pic_rr != 0}
 
    // peripherals
@@ -124,12 +122,6 @@ reg        int0_set = 0, int5_set = 0;    // one-clock requests
 reg  [7:0] ppia_wr = 0, ppia_rd = 0, ppib_wr = 0, ppib_rd = 8'd11, ppic = 8'd14;
 assign lpt_data = ppib_wr;
 
-// HDD registers
-reg [15:0] hd_sdh = 0;
-reg  [7:0] hd_snum = 0;
-reg [15:0] hd_cnum = 0;
-reg        hd_int = 0;
-
 // keyboard
 reg  [2:0] keypos = 0;
 reg        keyint = 0;
@@ -176,9 +168,10 @@ assign dbg = {ppib_rd[3:0], ioint, fdc_int, hd_int, |pic_rr};
 assign vm_virq = ~ppic[3];
 
 // FDC side
-assign fdc_port  = a[3:1];
-assign fdc_sel   = stb_rise & (a[15:6] == 16'o161000 >> 6) &
-                   (a[5:1] == 5'o20 || a[5:1] == 5'o22 || a[5:1] == 5'o34 || a[5:1] == 5'o35 || a[5:1] == 5'o37);
+assign fdc_port  = a[4:1];
+wire   fdc_adr   = (a[15:6] == 16'o161000 >> 6) &&
+                   (a[5:4] == 2'b10 || a[5:1] == 5'o34 || a[5:1] == 5'o35 || a[5:1] == 5'o37);   // 161040..161056, 161070, 161072, 161076
+assign fdc_sel   = stb_rise & fdc_adr;
 assign fdc_wr    = wbm_we;
 assign uart_data = wbm_dat_o[7:0];
 
@@ -232,8 +225,6 @@ integer i;
 always @(posedge clk) begin
    stb_d <= wbm_stb;
    fdc_reset  <= 1'b0;
-   hd_dir_wr  <= 1'b0;
-   hd_dir_rd  <= 1'b0;
    uart_wr    <= 1'b0;
    int0_set   <= 1'b0;
    int5_set   <= 1'b0;
@@ -245,18 +236,15 @@ always @(posedge clk) begin
       ack <= 1'b0; ram_req <= 1'b0; ram_wait <= 1'b0; rom_wait <= 0; cyc_rd_held <= 1'b0;
       pic_mode <= PIC_ICW1; pic_poll <= 1'b0; pic_rr <= 0; pic_mr <= 0;
       ppia_wr <= 0; ppia_rd <= 0; ppib_wr <= 0; ppib_rd <= 8'd11; ppic <= 8'd14;
-      hd_sdh <= 0; hd_snum <= 0; hd_cnum <= 0; hd_int <= 1'b0;
       keypos <= 0; keyint <= 1'b0;
       mousedx <= 0; mousedy <= 0; mousest <= 0;
       rtc_alarm_sec <= 0; rtc_alarm_min <= 0; rtc_alarm_hour <= 0;
       for(i = 0; i < 8; i = i + 1) begin HR[i] <= 0; UR[i] <= 0; key_prev[i] <= 0; end
-      fdc_params <= 0;
    end
    else begin
       // ---- the INIT line: the RESET instruction or DCLO ----
       if(vm_init) begin
          fdc_reset <= 1'b1;
-         hd_int    <= 1'b0;
          if(pic_mode == PIC_READY) pic_rr[0] <= 1'b1;
       end
 
@@ -349,35 +337,8 @@ always @(posedge clk) begin
                end
                else if(a[15:1] == 16'o161036 >> 1) begin      // PPIP mode word
                end
-               else if(a[15:1] == 16'o161040 >> 1 || a[15:1] == 16'o161044 >> 1 ||
-                       a[15:1] == 16'o161070 >> 1 || a[15:1] == 16'o161072 >> 1 ||
-                       a[15:1] == 16'o161076 >> 1) begin      // HD.BUFF, HD.SCNT, FD.CSR, FD.BUF, FD.CNT
+               else if(fdc_adr) begin                        // the disk controller's registers
                   if(!wbm_we) begin ack <= 1'b0; late_rd <= 1'b1; end
-               end
-               else if(a[15:1] == 16'o161042 >> 1) wbm_dat_i <= 16'h00ff;   // HD.ERR
-               else if(a[15:1] == 16'o161046 >> 1) begin      // HD.SNUM
-                  if(wbm_we) hd_snum <= wbm_dat_o[7:0]; else wbm_dat_i <= {8'd0, hd_snum};
-               end
-               else if(a[15:1] == 16'o161050 >> 1) begin      // HD.CNLO
-                  if(wbm_we) hd_cnum[7:0] <= wbm_dat_o[7:0]; else wbm_dat_i <= {8'd0, hd_cnum[7:0]};
-               end
-               else if(a[15:1] == 16'o161052 >> 1) begin      // HD.CNHI
-                  if(wbm_we) hd_cnum[15:8] <= wbm_dat_o[7:0]; else wbm_dat_i <= {8'd0, hd_cnum[15:8]};
-               end
-               else if(a[15:1] == 16'o161054 >> 1) begin      // HD.SDH
-                  hd_dir_wr <= 1'b1;
-                  if(wbm_we) begin
-                     hd_sdh <= wbm_dat_o;
-                     fdc_params <= {wbm_dat_o[3], wbm_dat_o[4], wbm_dat_o[2], wbm_dat_o[1], wbm_dat_o[0]};
-                  end
-                  else wbm_dat_i <= hd_sdh;
-               end
-               else if(a[15:1] == 16'o161056 >> 1) begin      // HD.CSR
-                  hd_dir_rd <= 1'b1;
-                  if(wbm_we) begin
-                     if(wbm_dat_o == 16'o020) hd_int <= 1'b1;   // RESTORE
-                  end
-                  else begin hd_int <= 1'b0; wbm_dat_i <= 16'h0041; end
                end
                else if(a[15:1] == 16'o161060 >> 1) begin      // DLBUF
                   if(wbm_we) uart_wr <= 1'b1;

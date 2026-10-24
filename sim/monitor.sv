@@ -63,9 +63,9 @@ end
 reg vid_on = 0;
 integer frames = 0;
 initial vid_on = $test$plusargs("vidmon");
-always @(posedge sim_top.emu.clk_sys) if(vid_on && sim_top.emu.video.frame_tick) begin
-   frames = frames + 1;
-   $display("frame %0d tas=%o tap=%o state=%0d rendering=%0d pc=%o halt=%0d dbg=%h", frames,
+always @(posedge sim_top.emu.clk_sys) if(sim_top.emu.video.frame_tick) begin
+   frames = frames + 1;             // counted always: the other monitors' frame filters use it
+   if(vid_on) $display("frame %0d tas=%o tap=%o state=%0d rendering=%0d pc=%o halt=%0d dbg=%h", frames,
             sim_top.emu.video.tasaddr, sim_top.emu.video.tapaddr, sim_top.emu.video.state,
             sim_top.emu.video.rendering, sim_top.emu.dbg_adr[15:0], sim_top.emu.vm_halt, sim_top.emu.dbg_cpu);
 end
@@ -131,6 +131,21 @@ always @(negedge sim_top.SDRAM_CLK) if(sd_from >= 0 && cycles >= sd_from && sd_l
                sim_top.emu.mem.req, sim_top.emu.mem.ack, sim_top.emu.mem.state, sim_top.emu.mem.cpu_req_s, sim_top.emu.mem.cpu_ack);
       sd_lines = sd_lines + 1;
    end
+end
+
+
+// +hdmon: the hard disk controller's state on every change
+reg hd_on = 0;
+initial hd_on = $test$plusargs("hdmon");
+reg [31:0] hd_prev = 0;
+wire [31:0] hd_now = {sim_top.emu.fdc.hd_st, sim_top.emu.fdc.xfer_req, sim_top.emu.fdc.xfer_hd, sim_top.emu.fdc.done_s,
+                      sim_top.emu.fdc.hd_left, sim_top.emu.fdc.hd_int, sim_top.emu.fdc.hd_status, sim_top.emu.fdc.nbuf, sim_top.emu.fdc.hd_snum};
+always @(posedge sim_top.emu.clk_cpu) if(hd_on && hd_now != hd_prev) begin
+   hd_prev = hd_now;
+   $display("%0d f%0d HD st=%0d req=%0d hd=%0d done=%b left=%0d int=%0d status=%02x nbuf=%0d snum=%0d cnum=%0d sdh=%02x lba=%0d ok=%0d",
+            cycles, frames, sim_top.emu.fdc.hd_st, sim_top.emu.fdc.xfer_req, sim_top.emu.fdc.xfer_hd, sim_top.emu.fdc.done_s,
+            sim_top.emu.fdc.hd_left, sim_top.emu.fdc.hd_int, sim_top.emu.fdc.hd_status, sim_top.emu.fdc.nbuf, sim_top.emu.fdc.hd_snum,
+            sim_top.emu.fdc.hd_cnum, sim_top.emu.fdc.hd_sdh, sim_top.emu.fdc.hd_lba, sim_top.emu.fdc.hd_lba_ok);
 end
 
 endmodule

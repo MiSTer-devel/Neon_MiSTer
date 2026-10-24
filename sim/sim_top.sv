@@ -12,12 +12,12 @@ module sim_top
    input  [24:0] ps2_mouse,
 
    // the HPS side of the sector interface (see hps_io_sim.sv)
-   input  [ 1:0] img_mounted,
+   input  [ 2:0] img_mounted,
    input  [31:0] img_size,
    output [31:0] sd_lba,
-   output [ 1:0] sd_rd,
-   output [ 1:0] sd_wr,
-   input  [ 1:0] sd_ack,
+   output [ 2:0] sd_rd,
+   output [ 2:0] sd_wr,
+   input  [ 2:0] sd_ack,
    input  [ 7:0] sd_buff_addr,
    input  [15:0] sd_buff_dout,
    output [15:0] sd_buff_din,

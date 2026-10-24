@@ -62,6 +62,7 @@ localparam CONF_STR = {
 	"-;",
 	"S0,DSK,Floppy FD0;",
 	"S1,DSK,Floppy FD1;",
+	"S2,IMG,Hard disk;",
 	"-;",
 	"O[3:2],RAM,4 MB,512 KB,1 MB,2 MB;",
 	"O[4],Timer IRQ5,50 Hz frame,64 Hz clock;",
@@ -87,21 +88,21 @@ wire        ioctl_wr;
 wire [26:0] ioctl_addr;
 wire [15:0] ioctl_dout;
 
-localparam DRIVES = 2;
+localparam SLOTS = 3;             // two floppies and the hard disk
 
-wire [DRIVES-1:0] img_mounted;
+wire [SLOTS-1:0]  img_mounted;
 wire              img_readonly;
 wire [63:0]       img_size;
-wire [31:0]       sd_lba[DRIVES];
-wire [DRIVES-1:0] sd_rd;
-wire [DRIVES-1:0] sd_wr;
-wire [DRIVES-1:0] sd_ack;
+wire [31:0]       sd_lba[SLOTS];
+wire [SLOTS-1:0]  sd_rd;
+wire [SLOTS-1:0]  sd_wr;
+wire [SLOTS-1:0]  sd_ack;
 wire [12:0]       sd_buff_addr;
 wire [15:0]       sd_buff_dout;
-wire [15:0]       sd_buff_din[DRIVES];
+wire [15:0]       sd_buff_din[SLOTS];
 wire              sd_buff_wr;
 
-hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(DRIVES)) hps_io
+hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(SLOTS)) hps_io
 (
 	.clk_sys(clk_sys),
 	.HPS_BUS(HPS_BUS),
@@ -124,7 +125,7 @@ hps_io #(.CONF_STR(CONF_STR), .WIDE(1), .VDNUM(DRIVES)) hps_io
 	.img_size(img_size),
 
 	.sd_lba(sd_lba),
-	.sd_blk_cnt('{DRIVES{6'd0}}),
+	.sd_blk_cnt('{SLOTS{6'd0}}),
 	.sd_rd(sd_rd),
 	.sd_wr(sd_wr),
 	.sd_ack(sd_ack),
@@ -254,19 +255,25 @@ neon_video video
 	.blue(blue),
 	.frame_tick(frame_tick),
 	.dbg_in(dbg_cpu),
+	.dbg_hd(dbg_hd),
 	.dbg_out(dbg_bits)
 );
 
-// debug overlay, 30 rows of 16 bits: the 28 acknowledged bus cycles (halt flag,
-// A15..1, the oldest first) before the firmware's monitor is entered (a halt-mode
-// fetch at 010200 or 010216) or before a halt-mode word read of vector 4 or 10;
-// until then, the 28 cycles before the start of the current frame.  Row 28:
-// {beat15, frozen, halt, dclo, ppib3..0, ioint, fdc_int, hd_int, pic_rr!=0,
-// bus stall, we, ram req, ram ack}, row 29 the renderer's state.
+// The debug overlay, shown when the project is built with the macro
+// NEON_DEBUG_OVERLAY (neon_video.sv draws it over the top left of the
+// picture, 16 boxes a row, yellow = 1): 30 rows of 16 bits.  Rows 0..27 are
+// the 28 acknowledged bus cycles (halt flag, A15..1, the oldest first) before
+// the firmware's monitor is entered (a halt-mode fetch at 010200 or 010216)
+// or before a halt-mode word read of vector 4 or 10; until then, the 28
+// cycles before the start of the current frame.  Row 28: {beat15, frozen,
+// halt, dclo, ppib3..0, ioint, fdc_int, hd_int, pic_rr!=0, bus stall, we,
+// ram req, ram ack}; row 29 the disk controller's counters (fdc.sv dbg).
+// A MiSTer screenshot ("screenshot" to /dev/MiSTer_cmd) reads cleanly.
 localparam DBG_N = 28;
 reg  [DBG_N*16+15:0] dbg_cpu = 0;
 wire         [511:0] dbg_bits;
 wire           [7:0] dbg_sys;
+wire          [15:0] dbg_hd;
 reg  [DBG_N*16-1:0]  dbg_ring = 0;     // the newest cycle in [15:0]
 reg  [DBG_N*16-1:0]  dbg_adr  = 0;     // the displayed ones
 reg   [15:0] dbg_beat = 0;
@@ -276,12 +283,15 @@ reg          dbg_tick = 0, dbg_tick_d = 0;
 wire         dbg_trap = wbm_adr[16] & ~wbm_we &
                         ((wbm_sel == 2'b11 && (wbm_adr[15:1] == 15'd2 || wbm_adr[15:1] == 15'd4)) ||
                          wbm_adr[15:1] == (16'o010200 >> 1) || wbm_adr[15:1] == (16'o010216 >> 1));
+// the firmware's request-wait loop is left out of the ring, so a hang in
+// it shows what came before
+wire dbg_skip = ~wbm_adr[16] & (wbm_adr[15:3] == (16'o001240 >> 3) || wbm_adr[15:1] == (16'o157130 >> 1));
 always @(posedge clk_sys) if(frame_tick) dbg_tick <= ~dbg_tick;
 always @(posedge clk_cpu) begin
 	dbg_tick_d <= dbg_tick;
 	if(wbm_stb & wbm_ack) begin
 		if(dbg_trap) dbg_frozen <= 1'b1;
-		else dbg_ring <= {dbg_ring[DBG_N*16-17:0], wbm_adr[16:1]};
+		else if(!dbg_skip) dbg_ring <= {dbg_ring[DBG_N*16-17:0], wbm_adr[16:1]};
 		dbg_we   <= wbm_we;
 		dbg_beat <= dbg_beat + 1'd1;
 	end
@@ -326,8 +336,11 @@ video_mixer #(.LINE_LENGTH(832), .HALF_DEPTH(0), .GAMMA(1)) video_mixer
 
 // the frame tick for the I/O block, on the CPU clock
 reg [2:0] frame_s = 0;
-always @(posedge clk_cpu) frame_s <= {frame_s[1:0], frame_tick};
-wire tick50 = frame_s[1] & ~frame_s[2];
+// the frame tick as a toggle, so the one-clk_sys pulse cannot be missed
+reg  frame_tgl = 0;
+always @(posedge clk_sys) if(frame_tick) frame_tgl <= ~frame_tgl;
+always @(posedge clk_cpu) frame_s <= {frame_s[1:0], frame_tgl};
+wire tick50 = frame_s[1] ^ frame_s[2];
 
 ///////////////////////   KEYBOARD   /////////////////////////////
 
@@ -384,10 +397,9 @@ vm2_wb #(.VM2_CORE_FIX_PREFETCH(0)) cpu
 	.wbi_una_o  (wbi_una)
 );
 
-wire        fdc_sel, fdc_wr, fdc_reset, hd_dir_wr, hd_dir_rd, fdc_int, fdc_motor;
-wire  [2:0] fdc_port;
+wire        fdc_sel, fdc_wr, fdc_reset, fdc_int, hd_int, fdc_motor;
+wire  [3:0] fdc_port;
 wire  [7:0] fdc_dout;
-wire  [4:0] fdc_params;
 wire  [2:0] sound;
 wire  [7:0] lpt_data, uart_data;
 wire        uart_wr;
@@ -431,10 +443,8 @@ neon_sys sys
 	.fdc_wr(fdc_wr),
 	.fdc_dout(fdc_dout),
 	.fdc_reset(fdc_reset),
-	.hd_dir_wr(hd_dir_wr),
-	.hd_dir_rd(hd_dir_rd),
-	.fdc_params(fdc_params),
 	.fdc_int(fdc_int),
+	.hd_int(hd_int),
 	.dbg(dbg_sys),
 
 	.key_matrix(key_matrix),
@@ -447,7 +457,7 @@ neon_sys sys
 	.uart_data(uart_data)
 );
 
-///////////////////////   FLOPPY DISKS   /////////////////////////
+///////////////////////   DISKS   ////////////////////////////////
 
 wire [31:0] fdc_lba;
 wire [15:0] fdc_buff_din;
@@ -463,11 +473,10 @@ fdc fdc
 	.wr(fdc_wr),
 	.din(wbm_dat_o[7:0]),
 	.dout(fdc_dout),
-	.dir_wr(hd_dir_wr),
-	.dir_rd(hd_dir_rd),
-	.params(fdc_params),
 	.int_o(fdc_int),
+	.hd_int(hd_int),
 	.motor_o(fdc_motor),
+	.dbg(dbg_hd),
 
 	.sd_clk(clk_sys),
 	.img_mounted(img_mounted),
@@ -485,10 +494,12 @@ fdc fdc
 
 assign sd_lba[0] = fdc_lba;
 assign sd_lba[1] = fdc_lba;
+assign sd_lba[2] = fdc_lba;
 assign sd_buff_din[0] = fdc_buff_din;
 assign sd_buff_din[1] = fdc_buff_din;
+assign sd_buff_din[2] = fdc_buff_din;
 
-assign LED_DISK = {1'b0, fdc_motor};
+assign LED_DISK = {1'b0, fdc_motor | sd_rd[2] | sd_wr[2]};
 assign LED_USER = fdc_int;
 
 ///////////////////////   SOUND   ////////////////////////////////

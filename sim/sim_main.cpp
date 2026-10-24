@@ -11,12 +11,18 @@
 // options:
 //   F:KEY       press a key at frame F, let it go KEY_HOLD_FRAMES later; KEY
 //               is a PS/2 set 2 code in hex, E0xx for an extended one
-//   t=F:TEXT    type TEXT from frame F: letters, digits, space . , / - ;
-//               '|' is Enter
-//   dN=PATH     put a disk image in drive N (0 or 1)
-//   oN=PATH     write drive N's image to PATH at the end
+//   t=F:TEXT    type TEXT from frame F: letters, digits, space . , / - : '
+//               (the @ key); '|' is Enter
+//   dN=PATH     put a disk image in slot N: 0 and 1 the floppies, 2 the
+//               hard disk (see tools/mkhd.py)
+//   oN=PATH     write slot N's image to PATH at the end
 //   lat=US      the HPS's delay before a sector transfer (default 200 us)
 //   +sdlog      print every sector transfer
+//   +dump=PATH  write the 4 MB of RAM to PATH at the end
+//   +status=N   the OSD status word (4 = 512 KB of RAM, a quick memory test)
+//   +rtc=HEX    the real-time clock value hps_io would give
+//   monitor.sv adds +vidmon, +busmon/+busfrom, +adrmon/+adrfrom, +sdmon,
+//   +hdmon, +lowfrom, +linemon, +demon, +fdmon
 //
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +30,9 @@
 #include <string>
 #include <vector>
 #include "Vsim_top.h"
+#include "Vsim_top___024root.h"
+#include "Vsim_top_sim_top.h"
+#include "Vsim_top_sdram_model.h"
 #include "verilated.h"
 
 static const int  RESET_CYCLES     = 100;
@@ -37,7 +46,7 @@ static const char ENTER_CHAR       = '|';
 
 static const long CLK_HZ           = 64000000;
 static const int  DEFAULT_LAT_US   = 200;
-static const int  DRIVES           = 2;
+static const int  DRIVES           = 3;   // two floppies (d0=, d1=) and the hard disk (d2=)
 static const int  SECTOR_WORDS     = 256;
 static const int  SECTOR_BYTES     = 512;
 static const int  WORD_CYCLES      = 4;
@@ -160,12 +169,14 @@ int main(int argc, char **argv)
 
    Hps hps;
    int lat_us = DEFAULT_LAT_US;
+   const char *dump = nullptr;      // +dump=file: the 4 MB of RAM at the end
    std::vector<KeyEvent> keys;
 
    for(int i = 3; i < argc; i++) {
       const char *a = argv[i];
       int f, k, n;
       if(!strcmp(a, "+sdlog")) hps.log = true;
+      else if(!strncmp(a, "+dump=", 6)) dump = a + 6;
       else if(a[0] == '+') continue;
       else if(!strncmp(a, "lat=", 4)) lat_us = atoi(a + 4);
       else if((a[0] == 'd' || a[0] == 'o') && a[1] >= '0' && a[1] < '0' + DRIVES && a[2] == '=') {
@@ -268,6 +279,14 @@ int main(int argc, char **argv)
       fclose(fp);
    }
    printf("sd reads %ld writes %ld\n", hps.reads, hps.writes);
+   if(dump) {
+      FILE *fp = fopen(dump, "wb");
+      for(int i = 0; i < 2097152; i++) {
+         unsigned short w = top->rootp->sim_top->sdram->mem[i];
+         fputc(w & 0xff, fp); fputc(w >> 8, fp);
+      }
+      fclose(fp);
+   }
 
    delete top;
    return 0;

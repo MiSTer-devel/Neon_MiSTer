@@ -46,6 +46,7 @@ module neon_video
 
    // debug overlay: 32 bits as boxes on the top 16 lines, [31:16] above [15:0]
    input     [463:0] dbg_in,
+   input      [15:0] dbg_hd,
    output    [511:0] dbg_out
 );
 
@@ -388,7 +389,7 @@ end
 // ---------------------------------------------------------------------
 // Scan-out
 // ---------------------------------------------------------------------
-assign dbg_out = {dbg_in, state, rendering, ram_req, ram_ack, 8'd0, 32'd0};
+assign dbg_out = {dbg_in, dbg_hd, 32'd0};
 wire [8:0] dbg_bit = 9'd511 - {vcnt[7:3], hcnt[8:5]};
 `ifdef NEON_DEBUG_OVERLAY
 wire       dbg_on  = (vcnt < 9'd240) && (hcnt < 10'd512) && (hcnt[4:1] != 4'd15) && (vcnt[2:0] != 3'd7);

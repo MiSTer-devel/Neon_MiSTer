@@ -75,9 +75,8 @@ machine's formatter (`HARD.SAV`) does it: image sector 0 is the home block
 with the partition table (the sector the formatter numbers 255 on
 cylinder 0), then the cylinders; the sectors of partition *p* are numbered
 32*p* + 0..17.  `tools/mkhd.py` makes an empty image with a partition
-table:
-
-    tools/mkhd.py neon.img          # 615 cylinders, 7 partitions of 85, boots HD0:
+table (`tools/mkhd.py neon.img`, on the `dev` branch); `neon_empty.img`
+in the release archive is such an image.
 
 To put a system on it, mount it, boot RT-11 from a floppy and copy:
 
@@ -118,20 +117,17 @@ the built cores.  Building with the Verilog macro `NEON_DEBUG_OVERLAY`
 draws a bus-trace overlay over the picture (see the comment in `Neon.sv`),
 which a MiSTer screenshot captures for hardware debugging.
 
-## Simulation
+## Development
 
-`sim/` holds a Verilator model of the core: `make` there, then from a
-directory with an `rtl/` link to the project's `rtl/`,
-`sim/obj_dir/Vsim_top FRAMES EVERY [options]` runs the machine, writes
-frames as PPM files, mounts images and types commands; the options are
-listed in `sim/sim_main.cpp` and `sim/monitor.sv`.  `+status=4` selects
-512 KB of RAM for a quick memory test.
+The `dev` branch adds `sim/`, a Verilator model of the core (`make` there,
+then `sim/obj_dir/Vsim_top FRAMES EVERY [options]` from a directory with
+an `rtl/` link runs the machine, writes frames as PPM files, mounts images
+and types commands; the options are listed in `sim/sim_main.cpp` and
+`sim/monitor.sv`), and `tools/mkhd.py`, which makes hard disk images.
 
 ## Licences
 
 * The framework (`sys/`) and this core's own files: GPL v2 or later, see `LICENSE`.
-* `rtl/sdram.sv`: after the SDRAM controller of the TSConf core (TS-Labs,
-  Sorgelig), GPL v3.
 * `rtl/vm2/`: K1801VM2 by 1801BM1, CC BY 3.0.
 * `rtl/vm_reset.v`: from tang-uknc, MIT.
 * `rtl/rom/pk11_rom.hex`: the machine's firmware, from NeonBTL.

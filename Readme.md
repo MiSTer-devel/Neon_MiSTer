@@ -37,6 +37,18 @@ disk; the window system, games, music and demo programs run.
 * Not yet: the serial port, the printer.  The IDE port that NeonBTL
   emulates at 161120 is not fitted; the firmware does not use it.
 
+## Prior work
+
+[UNEON](https://github.com/xolod79/UNEON) by xolod79 is an earlier FPGA
+implementation of the Soyuz-Neon for MiST, MiSTer, Terasic DE1 and Tang
+Nano 20K, published as binaries since January 2024 and built on the
+1801VM2 reverse engineering and the open Soyuz-Neon replica project.  His
+reports to [1801BM1/cpu11](https://github.com/1801BM1/cpu11/issues?q=is%3Aissue+vm2)
+(the interrupt acknowledge timeout vector, the frozen PSW/PC copies on
+user-mode interrupts) led to fixes in the K1801VM2 core this one uses.
+This core is an independent, open implementation after the NeonBTL
+emulator.
+
 ## Software
 
 Put the images in `games/Neon` on the SD card.  The OSD mounts floppy

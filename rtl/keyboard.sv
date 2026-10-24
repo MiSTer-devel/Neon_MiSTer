@@ -112,6 +112,12 @@ function [10:0] neon_key(input ext, input [7:0] code);
       8'h72: neon_key = 11'h510;  // Down
       8'h14: neon_key = 11'h380;  // Right Ctrl - ГРАФ
       8'h4A: neon_key = 11'h710;  // KP /
+      // the navigation block doubles the machine's special keys, as in UNEON
+      8'h71: neon_key = 11'h703;  // Delete    - ПОМ
+      8'h69: neon_key = 11'h603;  // End       - УСТ
+      8'h7A: neon_key = 11'h604;  // Page Down - ИСП
+      8'h70: neon_key = 11'h704;  // Insert    - СБРОС
+      8'h6C: neon_key = 11'h240;  // Home      - СТОП
       default: neon_key = 11'h000;
       endcase
 endfunction

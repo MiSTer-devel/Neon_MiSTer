@@ -44,6 +44,11 @@ images as FD0/FD1 and a hard disk image; `boot.vhd`, `boot1.vhd` and
 `boot2.vhd` in that folder are mounted automatically when the core starts,
 as FD0, FD1 and the hard disk.
 
+A ready set of images (system and demo floppies, a hard disk image with
+a system and the software below on its partitions) is attached to each
+[release](https://github.com/alfishe/Neon_MiSTer/releases) of this
+repository as `Neon_software_*.zip`; unpack it into `games/Neon`.
+
 Floppy images are 819200-byte `.dsk` files.  Sources:
 
 * The [PK11_NEON section](https://archive.pdp-11.org.ru/vid/PK11_NEON/)
